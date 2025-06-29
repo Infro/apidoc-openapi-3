@@ -182,10 +182,12 @@ function generateProps(verb) {
         responses
     }
 
-    if(!(JSON.stringify(body) === JSON.stringify({}))){ // body not empty
-        pathItemObject[verb.type]["requestBody"] = {content: {
-            'application/json': body
-        }}
+    if (!(JSON.stringify(body) === JSON.stringify({}))) { // body not empty
+        pathItemObject[verb.type]["requestBody"] = {
+            content: {
+                'application/json': body
+            }
+        }
 
     }
 
@@ -199,7 +201,7 @@ function generateBody(verb) {
         const Parameter = verb.parameter.fields.Parameter || []
         const _body = verb.parameter.fields.Body || []
         mixedBody.push(..._body)
-        if (!(verb.type === 'get'))  {
+        if (!(verb.type === 'get')) {
             mixedBody.push(...Parameter)
         }
     }
