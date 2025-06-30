@@ -1,8 +1,13 @@
 var _ = require('lodash');
 var { pathToRegexp } = require('path-to-regexp');
 const { debug, log } = require('winston');
-const GenerateSchema = require('generate-schema')
-
+// const GenerateSchema = require('generate-schema')
+const { mergeSchemas } = require('@fastify/merge-json-schemas');
+const gs = require('generate-schema')
+import { convert } from '@openapi-contrib/json-schema-to-openapi-schema';
+function GenerateSchema(a, b) {
+    return convert(gs(a, b))
+}
 
 var swagger = {
     openapi: "3.0.0",
@@ -29,7 +34,7 @@ function addInfo(projectJson) {  // cf. https://swagger.io/specification/#info-o
     var info = {};
     info["title"] = projectJson.title || projectJson.name;
     info["version"] = projectJson.version;
-    info["description"] = projectJson.description;
+    info["description"] = removeTags(projectJson.description);
     return info;
 }
 
@@ -69,38 +74,6 @@ function extractPaths(apidocJson) {  // cf. https://swagger.io/specification/#pa
     return paths;
 }
 
-
-function mapItem(i, type) {
-    // var schema = GenerateSchema.json(i.field, i.defaultValue || i.example || {});
-    var schema = (i.type === 'string') ? {
-            type: 'string',
-            default: i.defaultValue
-        } : generateSchemaFromParameters(i, {});
-
-    return {
-        in: type,
-        name: i.field,
-        description: removeTags(i.description),
-        required: !i.optional,
-        schema: 
-    };
-}
-
-function mapHeaderItem(i) {
-    return mapItem(i, 'header');
-}
-
-function mapQueryItem(i) {
-    return mapItem(i, 'query');
-}
-
-function mapParamItem(i) {
-    return mapItem(i, 'path');
-}
-
-function mapBodyItem(i) {
-    return mapItem(i, 'body');
-}
 
 /**
  * apiDocParams
@@ -142,7 +115,7 @@ function transferApidocParamsToSwaggerBody(apiDocParams, parameterInBody) {
             if (!mountPlaces[objectName]['properties'][propertyName]) {
                 mountPlaces[objectName]['properties'][propertyName] = {
                     items: {
-                        type: type.slice(0, -2), description: i.description,
+                        type: type.slice(0, -2), description: removeTags(i.description),
                         // default: i.defaultValue,
                         example: i.defaultValue
                     },
@@ -162,7 +135,7 @@ function transferApidocParamsToSwaggerBody(apiDocParams, parameterInBody) {
         } else {
             mountPlaces[objectName]['properties'][propertyName] = {
                 type,
-                description: i.description,
+                description: removeTags(i.description),
                 default: i.defaultValue,
             }
         }
@@ -178,6 +151,7 @@ function transferApidocParamsToSwaggerBody(apiDocParams, parameterInBody) {
 
     return parameterInBody
 }
+
 function generateProps(verb) {
     const pathItemObject = {}
     const parameters = generateParameters(verb)
@@ -191,10 +165,12 @@ function generateProps(verb) {
         responses
     }
 
-    if(!(JSON.stringify(body) === JSON.stringify({}))){ // body not empty
-        pathItemObject[verb.type]["requestBody"] = {content: {
-            'application/json': body
-        }}
+    if (!(JSON.stringify(body) === JSON.stringify({}))) { // body not empty
+        pathItemObject[verb.type.toLowerCase()]["requestBody"] = {
+            content: {
+                'application/json': body
+            }
+        }
 
     }
 
@@ -218,9 +194,55 @@ function generateBody(verb) {
     //     body = generateRequestBody(verb, mixedBody)
     // }
 
-    mixedBody = verb && verb.Body || []
-    generateRequestBody(verb, mixedBody)
-    return body
+    mixedBody = verb && verb.body || []
+    return generateRequestBody(verb, mixedBody)
+}
+
+var groupToOpenApiInType =
+{
+    "Parameter": "path",
+    "Query": "query",
+    "Header": "header",
+};
+
+function reduceParams(acc, i) {
+    if (i.field.indexOf('.') === -1) {
+        var item = {
+            name: i.field,
+            in: groupToOpenApiInType[i.group],
+            description: removeTags(i.description),
+            required: !i.defaultValue && !i.optional,
+            schema: {
+                type: i.type ? i.type.toLowerCase() : "string",
+                ...(i.type === 'Object' && { properties: {}, required: [] }),
+                ...(i.type.endsWith('[]') && { type: 'array', items: { type: i.type.slice(0, -2) } }),
+                ...(i.default && { default: i.defaultValue }),
+                ...(i.enum && { enum: i.enum })
+            }
+        };
+        acc.kvm[item.name] = item;
+        acc.params.push(item);
+        return acc;
+    } else {
+        var path = i.field.split('.');
+        if (path.length > 2) {
+            console.error('Nested path with more than 2 levels is not supported', i.field);
+            return acc;
+        }
+        objectName = path[0];
+        propertyName = path[1];
+        var item = {
+            description: removeTags(i.description),
+            type: i.type ? i.type.toLowerCase() : "string",
+            ...(i.default && { default: i.defaultValue }),
+            ...(i.enums && i.enums.length > 0 && { enum: i.enums }) //.map(e => e.value)
+        };
+        acc.kvm[objectName].schema.properties[propertyName] = item;
+        if ((i.defaultValue === undefined) && !i.optional)
+            acc.kvm[objectName].schema.required.push(propertyName);
+        // acc.params.push();
+        return acc;
+    }
 }
 
 function generateParameters(verb) {
@@ -241,24 +263,18 @@ function generateParameters(verb) {
     //     }
     // }
 
-    const parameters = []
-    parameters.push(...paramItems.map(mapParamItem))
-    parameters.push(...mixedQuery.map(mapQueryItem))
-    parameters.push(...header.map(mapHeaderItem))
-    parameters.push(...(verb.query || []).map(mapQueryItem))
+    const parameters = [];
 
-    return parameters
-}
+    const reducedRouteParams = (verb && verb.parameter && verb.parameter.fields && verb.parameter.fields.Parameter || []).reduce(reduceParams, { kvm: {}, params: [] });
+    const reducedHeaderParams = (verb && verb.header && verb.header.fields && verb.header.fields.Header || []).reduce(reduceParams, { kvm: {}, params: [] });
+    const reducedQueryParams = (verb && verb.query || []).reduce(reduceParams, { kvm: {}, params: [] });
 
-function generateSchemaFromParameters(mixedBody, parameter) {
-    const bodyParameter = {
-        schema: {
-            properties: {},
-            type: 'object',
-            required: []
-        }
-    }
-    return transferApidocParamsToSwaggerBody(mixedBody, bodyParameter);
+    // parameters.push(...map(mapParamItem));
+    // parameters.push(...(verb.query || []).map(mapQueryItem));
+    // parameters.push(...(verb && verb.header && verb.header.fields.Header || []).map(mapHeaderItem));
+
+    // return parameters
+    return [...reducedRouteParams.params, ...reducedHeaderParams.params, ...reducedQueryParams.params];
 }
 
 function generateRequestBody(verb, mixedBody) {

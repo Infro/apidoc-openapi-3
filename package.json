@@ -26,6 +26,8 @@
     },
     "license": "ISC",
     "dependencies": {
+        "@fastify/merge-json-schemas": "^0.2.1",
+        "@openapi-contrib/json-schema-to-openapi-schema": "^4.0.2",
         "apidoc": "^1.2.0",
         "commander": "^6.0.0",
         "generate-schema": "^2.6.0",
@@ -34,7 +36,7 @@
         "winston": "^3.3.3"
     },
     "peerDependencies": {
-        "typescript": "^3.8.7"
+        "typescript": "^5.8.3"
     },
     "devDependencies": {
         "jest": "^27.5.1"
