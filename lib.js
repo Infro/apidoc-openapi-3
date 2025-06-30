@@ -55,7 +55,7 @@ function createOutputFile(swaggerData, log, options) {
     //Write swagger
     log.verbose('write swagger json file: ' + options.dest + 'swagger.json');
     if (!options.simulate)
-        fs.writeFileSync(options.dest + './swagger.json', swaggerData);
+        fs.writeFileSync(options.dest + '/swagger.json', swaggerData);
 }
 
 exports.main = main

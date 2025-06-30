@@ -52,7 +52,7 @@ function extractPaths(apidocJson) {  // cf. https://swagger.io/specification/#pa
         // Surrounds URL parameters with curly brackets -> :email with {email}
         var pathKeys = [];
         for (let j = 1; j < matches.length; j++) {
-            var key = matches[j].substr(1);
+            var key = matches[j].substring(1);
             url = url.replace(matches[j], "{" + key + "}");
             pathKeys.push(key);
         }
@@ -69,30 +69,37 @@ function extractPaths(apidocJson) {  // cf. https://swagger.io/specification/#pa
     return paths;
 }
 
-function mapHeaderItem(i) {
+
+function mapItem(i, type) {
+    // var schema = GenerateSchema.json(i.field, i.defaultValue || i.example || {});
+    var schema = (i.type === 'string') ? {
+            type: 'string',
+            default: i.defaultValue
+        } : generateSchemaFromParameters(i, {});
+
     return {
-        in: 'header',
+        in: type,
         name: i.field,
         description: removeTags(i.description),
         required: !i.optional,
-        schema: {
-            type: 'string',
-            default: i.defaultValue
-        }
-    }
+        schema: 
+    };
+}
+
+function mapHeaderItem(i) {
+    return mapItem(i, 'header');
 }
 
 function mapQueryItem(i) {
-    return {
-        in: 'query',
-        name: i.field,
-        description: removeTags(i.description),
-        required: !i.optional,
-        schema: {
-            type: 'string',
-            default: i.defaultValue
-        }
-    }
+    return mapItem(i, 'query');
+}
+
+function mapParamItem(i) {
+    return mapItem(i, 'path');
+}
+
+function mapBodyItem(i) {
+    return mapItem(i, 'body');
 }
 
 /**
@@ -145,6 +152,8 @@ function transferApidocParamsToSwaggerBody(apiDocParams, parameterInBody) {
         } else if (type === 'object') {
             // if schema(parsed from example) doesn't has this constructure, init
             if (!mountPlaces[objectName]['properties'][propertyName]) {
+                // Hack to bypass missing 'object'
+                // mountPlaces[objectName]= { type: 'object', properties: {}, required: [] };mountPlaces['']['properties'][objectName] = mountPlaces[objectName]
                 mountPlaces[objectName]['properties'][propertyName] = { type: 'object', properties: {}, required: [] }
             }
 
@@ -182,12 +191,10 @@ function generateProps(verb) {
         responses
     }
 
-    if (!(JSON.stringify(body) === JSON.stringify({}))) { // body not empty
-        pathItemObject[verb.type]["requestBody"] = {
-            content: {
-                'application/json': body
-            }
-        }
+    if(!(JSON.stringify(body) === JSON.stringify({}))){ // body not empty
+        pathItemObject[verb.type]["requestBody"] = {content: {
+            'application/json': body
+        }}
 
     }
 
@@ -195,22 +202,24 @@ function generateProps(verb) {
 }
 
 function generateBody(verb) {
-    const mixedBody = []
+    // const mixedBody = []
 
-    if (verb && verb.parameter && verb.parameter.fields) {
-        const Parameter = verb.parameter.fields.Parameter || []
-        const _body = verb.parameter.fields.Body || []
-        mixedBody.push(..._body)
-        if (!(verb.type === 'get')) {
-            mixedBody.push(...Parameter)
-        }
-    }
+    // if (verb && verb.parameter && verb.parameter.fields) {
+    //     const Parameter = verb.parameter.fields.Parameter || []
+    //     const _body = verb.parameter.fields.Body || []
+    //     mixedBody.push(..._body)
+    //     if (!(verb.type === 'get'))  {
+    //         mixedBody.push(...Parameter)
+    //     }
+    // }
 
-    let body = {}
-    if (verb.type === 'post' || verb.type === 'put') {
-        body = generateRequestBody(verb, mixedBody)
-    }
+    // let body = {}
+    // if (verb.type === 'post' || verb.type === 'put') {
+    //     body = generateRequestBody(verb, mixedBody)
+    // }
 
+    mixedBody = verb && verb.Body || []
+    generateRequestBody(verb, mixedBody)
     return body
 }
 
@@ -219,25 +228,37 @@ function generateParameters(verb) {
     const mixedBody = []
     const header = verb && verb.header && verb.header.fields.Header || []
 
-    if (verb && verb.parameter && verb.parameter.fields) {
-        const Parameter = verb.parameter.fields.Parameter || []
-        const _query = verb.parameter.fields.Query || []
-        const _body = verb.parameter.fields.Body || []
-        mixedQuery.push(..._query)
-        mixedBody.push(..._body)
-        if (verb.type === 'get') {
-            mixedQuery.push(...Parameter)
-        } else {
-            mixedBody.push(...Parameter)
-        }
-    }
+    // if (verb && verb.parameter && verb.parameter.fields) {
+    //     const Parameter = verb.parameter.fields.Parameter || []
+    //     const _query = verb.parameter.fields.Query || []
+    //     const _body = verb.body || []
+    //     mixedQuery.push(..._query)
+    //     mixedBody.push(..._body)
+    //     if (verb.type === 'get') {
+    //         mixedQuery.push(...Parameter)
+    //     } else {
+    //         mixedBody.push(...Parameter)
+    //     }
+    // }
 
     const parameters = []
+    parameters.push(...paramItems.map(mapParamItem))
     parameters.push(...mixedQuery.map(mapQueryItem))
     parameters.push(...header.map(mapHeaderItem))
     parameters.push(...(verb.query || []).map(mapQueryItem))
 
     return parameters
+}
+
+function generateSchemaFromParameters(mixedBody, parameter) {
+    const bodyParameter = {
+        schema: {
+            properties: {},
+            type: 'object',
+            required: []
+        }
+    }
+    return transferApidocParamsToSwaggerBody(mixedBody, bodyParameter);
 }
 
 function generateRequestBody(verb, mixedBody) {
@@ -276,7 +297,6 @@ function generateResponses(verb) {
             const schema = GenerateSchema.json(example.title, json)
             responses[code] = { schema, description: example.title }
         }
-
     }*/
 
     mountResponseSpecSchema(verb, responses)
@@ -322,7 +342,6 @@ function safeParseJson(content) {
         json
     }
 }
-
 function createNestedName(field, defaultObjectName) {
     let propertyName = field;
     let objectName;
