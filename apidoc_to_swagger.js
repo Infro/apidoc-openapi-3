@@ -3,10 +3,16 @@ var { pathToRegexp } = require('path-to-regexp');
 const { debug, log } = require('winston');
 // const GenerateSchema = require('generate-schema')
 const { mergeSchemas } = require('@fastify/merge-json-schemas');
-const gs = require('generate-schema')
-import { convert } from '@openapi-contrib/json-schema-to-openapi-schema';
-function GenerateSchema(a, b) {
-    return convert(gs(a, b))
+const GenerateSchema = require('generate-schema')
+const { convert, schemaWalker } = require('@openapi-contrib/json-schema-to-openapi-schema');
+const das = require('deasync')
+const Hjson = require('hjson');
+
+function convertSchema(a, b) {
+    let result;
+    convert(GenerateSchema.json(a, b)).then(res => { result = res; });
+    das.loopWhile(() => result === undefined);
+    return result;
 }
 
 var swagger = {
@@ -21,6 +27,21 @@ function toSwagger(apidocJson, projectJson) {
     // for (const key in swagger) {
     //     console.log('[%s] %o', key, swagger[key]);
     // }
+    swagger.components = {
+        securitySchemes: {
+            bearerAuth: {
+                type: "http",
+                scheme: "bearer",
+                bearerFormat: "JWT",
+            }
+        },
+        responses: {
+            UnauthorizedError: {
+                description: "Access token is missing or invalid"
+            }
+        }
+    };
+    swagger.security = [{ bearerAuth: [] }];
     return swagger;
 }
 
@@ -119,7 +140,8 @@ function transferApidocParamsToSwaggerBody(apiDocParams, parameterInBody) {
                         // default: i.defaultValue,
                         example: i.defaultValue
                     },
-                    type: 'array'
+                    type: 'array',
+                    ...(i.allowedValues && { enum: i.allowedValues.map(e => e.replace(/^[\s'"`]+|[\s'"`]+$/g, '')) })
                 }
             }
         } else if (type === 'object') {
@@ -129,7 +151,6 @@ function transferApidocParamsToSwaggerBody(apiDocParams, parameterInBody) {
                 // mountPlaces[objectName]= { type: 'object', properties: {}, required: [] };mountPlaces['']['properties'][objectName] = mountPlaces[objectName]
                 mountPlaces[objectName]['properties'][propertyName] = { type: 'object', properties: {}, required: [] }
             }
-
             // new mount point
             mountPlaces[key] = mountPlaces[objectName]['properties'][propertyName]
         } else {
@@ -137,6 +158,7 @@ function transferApidocParamsToSwaggerBody(apiDocParams, parameterInBody) {
                 type,
                 description: removeTags(i.description),
                 default: i.defaultValue,
+                ...(i.allowedValues && { enum: i.allowedValues.map(e => e.replace(/^[\s'"`]+|[\s'"`]+$/g, '')) })
             }
         }
         if (!i.optional) {
@@ -157,24 +179,36 @@ function generateProps(verb) {
     const parameters = generateParameters(verb)
     const body = generateBody(verb)
     const responses = generateResponses(verb)
+    if (pathItemObject[verb.type] !== undefined) {
+        log.warn('Overwriting existing path item for verb type:', verb.type, 'in URL:', verb.url);
+    }
     pathItemObject[verb.type] = {
+        // operationId: verb.name,
         tags: [verb.group],
         summary: removeTags(verb.name),
         description: removeTags(verb.title),
+        ...((!verb.permission || verb.permission[0].name === 'Public') && { security: [{}] }),
+        //security: generateSecurity(verb),
         parameters,
-        responses
+        responses,
     }
 
-    if (!(JSON.stringify(body) === JSON.stringify({}))) { // body not empty
-        pathItemObject[verb.type.toLowerCase()]["requestBody"] = {
-            content: {
-                'application/json': body
+    if (body && body.schema && body.schema.properties) {
+        if (Object.keys(body.schema.properties).length > 0) // body not empty
+            pathItemObject[verb.type.toLowerCase()]["requestBody"] = {
+                content: {
+                    'application/json': body
+                }
             }
-        }
-
     }
 
     return pathItemObject
+}
+
+function generateSecurity(verb) {
+    return {
+        bearerAuth: [] //verb.permission //Should be an array of roles.
+    }
 }
 
 function generateBody(verb) {
@@ -193,9 +227,7 @@ function generateBody(verb) {
     // if (verb.type === 'post' || verb.type === 'put') {
     //     body = generateRequestBody(verb, mixedBody)
     // }
-
-    mixedBody = verb && verb.body || []
-    return generateRequestBody(verb, mixedBody)
+    return generateRequestBody(verb, verb && verb.body || [])
 }
 
 var groupToOpenApiInType =
@@ -214,10 +246,14 @@ function reduceParams(acc, i) {
             required: !i.defaultValue && !i.optional,
             schema: {
                 type: i.type ? i.type.toLowerCase() : "string",
-                ...(i.type === 'Object' && { properties: {}, required: [] }),
-                ...(i.type.endsWith('[]') && { type: 'array', items: { type: i.type.slice(0, -2) } }),
+                ...(i.type === 'Object' && {
+                    properties: {},
+                    required: [],
+                    ...(i.group == "Query" && { style: 'deepObject', explode: true })
+                }),
+                ...(i.type.endsWith('[]') && { type: 'array', items: { type: i.type.slice(0, -2).toLowerCase() } }),
                 ...(i.default && { default: i.defaultValue }),
-                ...(i.enum && { enum: i.enum })
+                ...(i.allowedValues && { enum: i.allowedValues.map(e => e.replace(/^[\s'"`]+|[\s'"`]+$/g, '')) })
             }
         };
         acc.kvm[item.name] = item;
@@ -229,14 +265,14 @@ function reduceParams(acc, i) {
             console.error('Nested path with more than 2 levels is not supported', i.field);
             return acc;
         }
-        objectName = path[0];
-        propertyName = path[1];
+        var propertyName = path.pop();
         var item = {
             description: removeTags(i.description),
             type: i.type ? i.type.toLowerCase() : "string",
             ...(i.default && { default: i.defaultValue }),
-            ...(i.enums && i.enums.length > 0 && { enum: i.enums }) //.map(e => e.value)
+            ...(i.allowedValues && { enum: i.allowedValues.map(e => e.replace(/^[\s'"`]+|[\s'"`]+$/g, '')) })
         };
+        var objectName = path[0];
         acc.kvm[objectName].schema.properties[propertyName] = item;
         if ((i.defaultValue === undefined) && !i.optional)
             acc.kvm[objectName].schema.required.push(propertyName);
@@ -266,7 +302,8 @@ function generateParameters(verb) {
     const parameters = [];
 
     const reducedRouteParams = (verb && verb.parameter && verb.parameter.fields && verb.parameter.fields.Parameter || []).reduce(reduceParams, { kvm: {}, params: [] });
-    const reducedHeaderParams = (verb && verb.header && verb.header.fields && verb.header.fields.Header || []).reduce(reduceParams, { kvm: {}, params: [] });
+    const reducedHeaderParams = { params: [] };
+    // const reducedHeaderParams = (verb && verb.header && verb.header.fields && verb.header.fields.Header || []).reduce(reduceParams, { kvm: {}, params: [] });
     const reducedQueryParams = (verb && verb.query || []).reduce(reduceParams, { kvm: {}, params: [] });
 
     // parameters.push(...map(mapParamItem));
@@ -289,8 +326,11 @@ function generateRequestBody(verb, mixedBody) {
     if (_.get(verb, 'parameter.examples.length') > 0) {
         for (const example of verb.parameter.examples) {
             const { code, json } = safeParseJson(example.content)
-            const schema = GenerateSchema.json(example.title, json)
-            bodyParameter.schema = schema
+            const schema = convertSchema(example.title, json)
+            bodyParameter.schema = mergeSchemas([bodyParameter.schema, schema], {
+                mergeArrays: true,
+                mergeAdditionalProperties: true
+            });
             bodyParameter.description = example.title
         }
     }
@@ -307,13 +347,37 @@ function generateResponses(verb) {
             description: "OK"
         }
     }
-    /*if (success && success.examples && success.examples.length > 0) {
+    if (success && success.examples && success.examples.length > 0) {
         for (const example of success.examples) {
             const { code, json } = safeParseJson(example.content)
-            const schema = GenerateSchema.json(example.title, json)
-            responses[code] = { schema, description: example.title }
+            const existingSchema = responses[code] && responses[code].content && responses[code].content['application/json'] && responses[code].content['application/json'].schema;
+            const newSchema = convertSchema(example.title, json);
+            const schema = existingSchema && newSchema && mergeSchemas([
+                existingSchema,
+                newSchema
+            ], {
+                mergeArrays: true,
+                mergeAdditionalProperties: true
+            }) || newSchema || existingSchema;
+
+            var description = removeTags(example.title);
+            description = false
+                || (description.length === 0 && responses[code] && responses[code].description)
+                || (description.length > 0 && responses[code] && responses[code].description && description + '\n' + responses[code].description)
+                || (responses[code] && responses[code].description)
+                || description;
+            responses[code] = {
+                ...(schema && {
+                    content: {
+                        'application/json': {
+                            schema: schema
+                        }
+                    }
+                }),
+                description: description
+            };
         }
-    }*/
+    }
 
     mountResponseSpecSchema(verb, responses)
 
@@ -348,9 +412,9 @@ function safeParseJson(content) {
 
     let json = {}
     try {
-        json = JSON.parse(mayContentString)
+        json = Hjson.parse(mayContentString)
     } catch (error) {
-        console.warn('parse error', error)
+        console.warn(`Parse Error:\n\t${error}\n\tUsing: "${mayContentString}"`);//        console.warn(content)
     }
 
     return {

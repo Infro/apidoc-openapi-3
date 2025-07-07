@@ -38,7 +38,11 @@ function main(options) {
 
     const swagger = apidoc_to_swagger.toSwagger(apidocData, projectData)
 
-    api["swaggerData"] = JSON.stringify(swagger);
+    var hack = JSON.stringify(swagger);
+    hack = hack.replace(/,"required":\[\]/g, '')
+        .replace(/"type":"date"/g, '"type":"string","format":"date-time"')
+        .replace(/"type":"file"/g, '"type":"string","format":"binary"');
+    api["swaggerData"] = hack;
     createOutputFile(api.swaggerData, log, options)
 
     return swagger;
